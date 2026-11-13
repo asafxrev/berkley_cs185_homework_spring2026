@@ -47,12 +47,32 @@ class MSEPolicy(BasePolicy):
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
 
+        self.input_layer = nn.Linear(state_dim, hidden_dims[0])
+        self.hidden_layers = nn.ModuleList(
+            nn.Linear(hidden_dims[i], hidden_dims[i + 1]) 
+            for i in range(len(hidden_dims) - 1)
+        )
+        self.output_layer = nn.Linear(hidden_dims[-1], chunk_size * action_dim)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        """Forward pass to predict action chunks."""
+        x = self.input_layer(state)
+        x = torch.relu(x)
+        for layer in self.hidden_layers:
+            x = layer(x)
+            x = torch.relu(x)
+        x = self.output_layer(x)
+        return x.view(-1, self.chunk_size, self.action_dim)
+
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        """Compute MSE loss between predicted and true action chunks."""
+        pred_chunk = self.forward(state)
+        loss = nn.functional.mse_loss(pred_chunk, action_chunk)
+        return loss
 
     def sample_actions(
         self,
@@ -60,7 +80,7 @@ class MSEPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        return self.forward(state)
 
 
 class FlowMatchingPolicy(BasePolicy):

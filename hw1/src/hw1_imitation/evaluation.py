@@ -56,6 +56,7 @@ class Logger:
             f.write(
                 ",".join([str(filtered_row.get(k, "")) for k in self.header]) + "\n"
             )
+        print(f"Log. Step {step}: {row}")
         wandb.log(row, step=step)
         self.rows.append(copy.deepcopy(row))
 
@@ -155,6 +156,7 @@ def evaluate_policy(
         step: Training step used for logging and artifact metadata.
         logger: Logger for logging metrics.
     """
+    print(f"Evaluating policy at step {step}...")
     model.eval()
     rewards: list[float] = []
     videos: list[wandb.Video] = []

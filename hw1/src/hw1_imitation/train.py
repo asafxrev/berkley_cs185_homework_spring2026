@@ -9,10 +9,12 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch import optim
 import tyro
 import wandb
 from torch.utils.data import DataLoader
 
+from hw1_imitation import evaluation
 from hw1_imitation.data import (
     Normalizer,
     PushtChunkDataset,
@@ -88,7 +90,9 @@ def config_to_dict(config: TrainConfig) -> dict[str, Any]:
 
 def run_training(config: TrainConfig) -> None:
     set_seed(config.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else 
+                          "mps" if torch.backends.mps.is_available() else
+                          "cpu")
     print(f"Using device: {device}")
 
     zarr_path = download_pusht(config.data_dir)
@@ -128,6 +132,47 @@ def run_training(config: TrainConfig) -> None:
     logger = Logger(log_dir)
 
     ### TODO: PUT YOUR MAIN TRAINING LOOP HERE ###
+    optimizer = optim.Adam(model.parameters(), lr=config.lr)
+    total_step_counter = 0
+    model.train()
+    # compiled_model = torch.compile(model)
+    for epoch in range(config.num_epochs):
+        for step, (state, action_chunk) in enumerate(loader):
+            optimizer.zero_grad()
+            state = state.to(device)
+            # print(f"state shape: {state.shape}")
+            # print(f"action_chunk shape: {action_chunk.shape}")
+            action_chunk = action_chunk.to(device)
+
+            loss = model.compute_loss(state, action_chunk)
+            loss.backward()
+            optimizer.step()
+            total_step_counter += 1
+
+            if total_step_counter % config.log_interval == 0:
+                logger.log(
+                    {
+                        "train/loss": loss.item(),
+                        "train/epoch": epoch,
+                        "train/step": total_step_counter,
+                    },
+                    step=total_step_counter,
+                )
+
+            if total_step_counter % config.eval_interval == 0:
+                evaluation.evaluate_policy(
+                    model,
+                    normalizer,
+                    device,
+                    chunk_size=config.chunk_size,
+                    video_size=config.video_size,
+                    num_video_episodes=config.num_video_episodes,
+                    flow_num_steps=config.flow_num_steps,
+                    step=total_step_counter,
+                    logger=logger,
+                )
+                model.train()
+
 
     logger.dump_for_grading()
 
