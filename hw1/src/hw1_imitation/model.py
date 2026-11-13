@@ -95,13 +95,65 @@ class FlowMatchingPolicy(BasePolicy):
         hidden_dims: tuple[int, ...] = (128, 128),
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
+        
+        # The input of Flow Matching is the observation (state), the
+        # action chunk at the current time (denoising) step, 
+        # and the time step itself
+        self.input_layer = nn.Linear(
+            state_dim + action_dim * chunk_size + 1, hidden_dims[0])
+        self.hidden_layers = nn.ModuleList(
+            nn.Linear(hidden_dims[i], hidden_dims[i + 1])
+            for i in range(len(hidden_dims) - 1)
+        )
+        self.output_layer = nn.Linear(hidden_dims[-1], action_dim * chunk_size)
+        self.prng = torch.Generator(device="mps").manual_seed(17582)
+
+    def forward(self, 
+                state: torch.Tensor, 
+                action_chunk_t: torch.Tensor, 
+                tau: torch.Tensor) -> torch.Tensor:
+        """Forward pass to predict the velocity of the action chunk."""
+        input = torch.cat(
+            [
+                state,
+                action_chunk_t.flatten(start_dim=1),
+                tau.reshape(1,1).repeat(state.shape[0], 1),
+            ],
+            dim=1
+        )
+        x = self.input_layer(input)
+        x = torch.relu(x)
+        for layer in self.hidden_layers:
+            x = layer(x)
+            x = torch.relu(x)
+        x = self.output_layer(x)
+        return x.view(-1, self.chunk_size, self.action_dim)
+
+    def _make_initial_noise(self, state: torch.Tensor) -> torch.Tensor:
+        """Generate initial noise for the action chunk."""
+        return torch.normal(
+            mean=0, 
+            std=1, 
+            size=(state.shape[0], self.chunk_size, self.action_dim), 
+            generator=self.prng,
+            device=state.device
+        )
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        """Compute flow matching loss between predicted and true action chunks."""
+        initial_noise = self._make_initial_noise(state)
+        tau = torch.rand(size=(1,), 
+                         generator=self.prng, 
+                         device=state.device)
+        action_chunk_t = tau * action_chunk + (1 - tau) * initial_noise
+        pred_velocity = self.forward(state, action_chunk_t, tau)
+        expected_velocity = (action_chunk - initial_noise)
+        loss = nn.functional.mse_loss(pred_velocity, expected_velocity)
+        return loss
 
     def sample_actions(
         self,
@@ -109,7 +161,13 @@ class FlowMatchingPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        action_chunk_t = self._make_initial_noise(state)
+        for step in range(num_steps):
+            tau = torch.tensor([(step + 1) / num_steps], device=state.device)
+            action_chunk_t += (1 / num_steps) * self.forward(
+                state, action_chunk_t, tau)
+
+        return action_chunk_t
 
 
 PolicyType: TypeAlias = Literal["mse", "flow"]
